@@ -49,8 +49,6 @@ async function uploadSamples() {
                 data: {
                     filename: fileName,
                     type: 'RADIO', // Adjust based on your enum and desired categorization.
-                    // Optionally, you could store file data if your Prisma model supports it.
-                    // e.g., data: fileData,
                 },
             });
             console.log(`Uploaded ${fileName} with id ${result.id}`);
