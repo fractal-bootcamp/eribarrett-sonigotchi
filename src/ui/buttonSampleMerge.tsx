@@ -1,14 +1,139 @@
 "use client";
 
-import { useState } from 'react';
-import { useSampleTrigger } from './sampleTrigger';
+import { useCallback, useState, useEffect, useRef } from 'react';
+
+// ======= Sample Trigger Hook =======
+
+// Define base paths for different sample types
+const BEATS_PATH = '/Users/ijane/Documents/coding/fractal/genUIhack/sonigotchi/src/assets/loop/beats';
+const RADIOS_PATH = '/Users/ijane/Documents/coding/fractal/genUIhack/sonigotchi/src/assets/loop/radio';
+const FX_PATH = '/Users/ijane/Documents/coding/fractal/genUIhack/sonigotchi/src/assets/loop/FX';
+
+// Helper function to get all files from a directory
+const getFilesFromDirectory = async (dirPath: string): Promise<string[]> => {
+    try {
+        const response = await fetch(dirPath);
+        if (!response.ok) {
+            console.warn(`Failed to fetch directory ${dirPath} with status ${response.status}`);
+            return [];
+        }
+        const files = await response.json();
+        // Filter for audio files (mp3 and wav)
+        return files.filter((file: string) =>
+            file.endsWith('.mp3') || file.endsWith('.wav')
+        );
+    } catch (error) {
+        console.warn(`Error accessing directory ${dirPath}:`, error);
+        return [];
+    }
+};
+
+// Audio context and buffer management
+const audioContext = new AudioContext();
+const audioBuffers = new Map<string, AudioBuffer>();
+const activeNodes = new Map<string, AudioBufferSourceNode>();
+
+// Helper to load and cache audio buffer
+const loadAudioBuffer = async (url: string): Promise<AudioBuffer> => {
+    if (audioBuffers.has(url)) {
+        return audioBuffers.get(url)!;
+    }
+
+    const response = await fetch(url);
+    const arrayBuffer = await response.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    audioBuffers.set(url, audioBuffer);
+    return audioBuffer;
+};
+
+// Helper to play an audio sample with looping
+const playAudioLoop = async (url: string, shouldLoop = false) => {
+    try {
+        // Stop any existing playback of this sample
+        if (activeNodes.has(url)) {
+            activeNodes.get(url)?.stop();
+            activeNodes.delete(url);
+        }
+
+        const buffer = await loadAudioBuffer(url);
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.loop = shouldLoop;
+        source.connect(audioContext.destination);
+        source.start();
+
+        if (shouldLoop) {
+            activeNodes.set(url, source);
+        }
+
+        return new Promise<void>((resolve) => {
+            source.onended = () => {
+                if (!shouldLoop) {
+                    resolve();
+                }
+            };
+        });
+    } catch (error) {
+        console.warn(`Error playing audio from ${url}:`, error);
+    }
+};
+
+// Hook for managing looping samples
+const useLoopingSamples = () => {
+    const startLooping = async () => {
+        const loadAndPlayDirectory = async (dirPath: string) => {
+            const files = await getFilesFromDirectory(dirPath);
+            for (const file of files) {
+                const fileUrl = new URL(file, dirPath).toString();
+                await playAudioLoop(fileUrl, true);
+            }
+        };
+
+        await Promise.all([
+            loadAndPlayDirectory(BEATS_PATH),
+            loadAndPlayDirectory(RADIOS_PATH),
+            loadAndPlayDirectory(FX_PATH)
+        ]);
+    };
+
+    const stopLooping = () => {
+        activeNodes.forEach((node) => {
+            node.stop();
+        });
+        activeNodes.clear();
+    };
+
+    return { startLooping, stopLooping };
+};
+
+// Hook for triggering one-shot samples
+export const useSampleTrigger = () => {
+    const playRandomSample = useCallback(async (dirPath: string) => {
+        const files = await getFilesFromDirectory(dirPath);
+        if (files.length === 0) return;
+
+        const randomFile = files[Math.floor(Math.random() * files.length)];
+        if (!randomFile) return;
+
+        const fileUrl = new URL(randomFile, dirPath).toString();
+        await playAudioLoop(fileUrl, false);
+    }, []);
+
+    const playRandomBeat = useCallback(() => playRandomSample(BEATS_PATH), [playRandomSample]);
+    const playRandomRadio = useCallback(() => playRandomSample(RADIOS_PATH), [playRandomSample]);
+    const playRandomFX = useCallback(() => playRandomSample(FX_PATH), [playRandomSample]);
+
+    return { playRandomBeat, playRandomRadio, playRandomFX };
+};
+
+// ======= UI Components =======
 
 interface EmojiGridProps {
     emojis: string[];
 }
 
 export const EmojiGrid = ({ emojis }: EmojiGridProps) => {
-    // Calculate emoji size based on count - smaller as more are added
+    // Calculate emoji size based on count—smaller as more are added
     const emojiSize = Math.max(16, 48 - Math.floor(emojis.length / 5) * 4);
 
     return (
@@ -32,6 +157,7 @@ interface SoundButtonProps {
 
 export const BeatButton = ({ onEmojiAdd = () => { } }: SoundButtonProps) => {
     const { playRandomBeat } = useSampleTrigger();
+    const { startLooping, stopLooping } = useLoopingSamples();
 
     const handleTrigger = async () => {
         onEmojiAdd('🥁');
@@ -41,6 +167,11 @@ export const BeatButton = ({ onEmojiAdd = () => { } }: SoundButtonProps) => {
             console.error('Error playing beat:', error);
         }
     };
+
+    useEffect(() => {
+        void startLooping();
+        return () => stopLooping();
+    }, []);
 
     return (
         <button
@@ -107,7 +238,13 @@ export const ClearButton = ({ onClick }: { onClick: () => void }) => {
     );
 };
 
-export const DiceButton = ({ emojis, setEmojis }: { emojis: string[], setEmojis: (emojis: string[]) => void }) => {
+export const DiceButton = ({
+    emojis,
+    setEmojis,
+}: {
+    emojis: string[];
+    setEmojis: (emojis: string[]) => void;
+}) => {
     const { playRandomBeat, playRandomRadio, playRandomFX } = useSampleTrigger();
 
     const shuffleArray = <T,>(array: T[]): T[] => {
@@ -121,11 +258,9 @@ export const DiceButton = ({ emojis, setEmojis }: { emojis: string[], setEmojis:
 
     const handleRetrigger = async () => {
         try {
-            // Shuffle the emojis
             const shuffledEmojis = shuffleArray(emojis);
             setEmojis(shuffledEmojis);
 
-            // Play sounds for each emoji in the new order
             for (const emoji of shuffledEmojis) {
                 switch (emoji) {
                     case '🥁':
@@ -155,9 +290,15 @@ export const DiceButton = ({ emojis, setEmojis }: { emojis: string[], setEmojis:
     );
 };
 
-export const DeleteLastButton = ({ emojis, setEmojis }: { emojis: string[], setEmojis: (emojis: string[]) => void }) => {
+export const DeleteLastButton = ({
+    emojis,
+    setEmojis,
+}: {
+    emojis: string[];
+    setEmojis: (emojis: string[]) => void;
+}) => {
     const handleDelete = () => {
-        setEmojis((prev: string[]) => prev.slice(0, -1));
+        setEmojis(prev => prev.slice(0, -1));
     };
 
     return (
@@ -171,12 +312,18 @@ export const DeleteLastButton = ({ emojis, setEmojis }: { emojis: string[], setE
     );
 };
 
-export const AddRandomButton = ({ emojis, setEmojis }: { emojis: string[], setEmojis: (emojis: string[]) => void }) => {
+export const AddRandomButton = ({
+    emojis,
+    setEmojis,
+}: {
+    emojis: string[];
+    setEmojis: (emojis: string[]) => void;
+}) => {
     const availableEmojis = ['🥁', '📻', '🎛️'];
 
     const handleAddRandom = () => {
         const randomIndex = Math.floor(Math.random() * availableEmojis.length);
-        setEmojis((prev: string[]) => [...prev, availableEmojis[randomIndex]]);
+        setEmojis(prev => [...prev, availableEmojis[randomIndex]]);
     };
 
     return (
@@ -189,13 +336,18 @@ export const AddRandomButton = ({ emojis, setEmojis }: { emojis: string[], setEm
     );
 };
 
-export const SpiralButton = ({ emojis, setEmojis }: { emojis: string[], setEmojis: (emojis: string[]) => void }) => {
+export const SpiralButton = ({
+    emojis,
+    setEmojis,
+}: {
+    emojis: string[];
+    setEmojis: (emojis: string[]) => void;
+}) => {
     const { playRandomBeat, playRandomRadio, playRandomFX } = useSampleTrigger();
     const availableEmojis = ['🥁', '📻', '🎛️'];
 
     const handleSpiralTrigger = async () => {
         try {
-            // Generate random emojis up to 30
             const remainingSlots = 30 - emojis.length;
             if (remainingSlots <= 0) return;
 
@@ -208,7 +360,6 @@ export const SpiralButton = ({ emojis, setEmojis }: { emojis: string[], setEmoji
             const allEmojis = [...emojis, ...newEmojis];
             setEmojis(allEmojis);
 
-            // Play corresponding sounds for new emojis
             for (const emoji of newEmojis) {
                 switch (emoji) {
                     case '🥁':
@@ -242,7 +393,7 @@ export const SoundButtons = () => {
     const [emojis, setEmojis] = useState<string[]>([]);
 
     const handleAddEmoji = (emoji: string) => {
-        setEmojis((prev: string[]) => [...prev, emoji]);
+        setEmojis(prev => [...prev, emoji]);
     };
 
     const handleClear = () => {
